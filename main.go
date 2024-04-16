@@ -8,9 +8,11 @@ import (
 func main() {
 	const port = "8080"
 	const FilePathRoot = "."
+	const ChirpyFilePath = "logo.png"
 
 	mux := http.NewServeMux()
-	mux.Handle("/", http.FileServer(http.Dir(FilePathRoot)))
+	go mux.Handle("/", http.FileServer(http.Dir(FilePathRoot)))
+	go mux.Handle("/assets", http.FileServer(http.Dir(ChirpyFilePath)))
 	corsMux := middlewareCors(mux)
 	srv := &http.Server{
 		Handler: corsMux,
