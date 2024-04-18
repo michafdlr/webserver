@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 )
@@ -16,6 +18,7 @@ func main() {
 	mux.HandleFunc("GET /api/healthz", HealthzHandler)
 	mux.HandleFunc("GET /admin/metrics", apiCfg.CountHandler)
 	mux.HandleFunc("/api/reset", apiCfg.ResetHandler)
+	mux.HandleFunc("/api/validate_chirp", handler)
 
 	corsMux := middlewareCors(mux)
 	srv := &http.Server{
@@ -60,6 +63,52 @@ func (apiCfg *apiConfig) ResetHandler(w http.ResponseWriter, req *http.Request) 
 	apiCfg.fileserverHits = 0
 	hits := "Reset hits " + fmt.Sprintf("%d", apiCfg.fileserverHits)
 	w.Write([]byte(hits))
+}
+
+func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) error {
+	response, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.WriteHeader(code)
+	w.Write(response)
+	return nil
+}
+
+func respondWithError(w http.ResponseWriter, code int, msg string) error {
+	return respondWithJSON(w, code, map[string]string{"error": msg})
+}
+
+func handler(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	type requestBody struct {
+		Body string `json:"body"`
+	}
+	type responseBody struct {
+		Valid bool `json:"valid"`
+	}
+
+	dat, err := io.ReadAll(r.Body)
+	if err != nil {
+		respondWithError(w, 500, "couldn't read request")
+		return
+	}
+	params := requestBody{}
+	err = json.Unmarshal(dat, &params)
+	if err != nil {
+		respondWithError(w, 500, "couldn't unmarshal parameters")
+		return
+	}
+
+	if len(params.Body) > 140 {
+		respondWithError(w, 400, "Chirp is too long")
+	} else {
+		respondWithJSON(w, 200, responseBody{
+			Valid: true,
+		})
+	}
 }
 
 func middlewareCors(next http.Handler) http.Handler {
