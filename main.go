@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 )
@@ -8,13 +9,14 @@ import (
 func main() {
 	const port = "8080"
 	const FilePathRoot = "."
-	//const ChirpyFilePath = "logo.png"
 
+	apiCfg := apiConfig{fileserverHits: 0}
 	mux := http.NewServeMux()
-	go mux.Handle("/app/*", http.StripPrefix("/app", http.FileServer(http.Dir(FilePathRoot))))
-	go mux.HandleFunc("/healthz", HealthzHandler)
-	//go mux.HandleFunc("/app/*", AppHandler)
-	//go mux.Handle("/assets", http.FileServer(http.Dir(ChirpyFilePath)))
+	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(FilePathRoot)))))
+	mux.HandleFunc("GET /healthz", HealthzHandler)
+	mux.HandleFunc("GET /metrics", apiCfg.CountHandler)
+	mux.HandleFunc("/reset", apiCfg.ResetHandler)
+
 	corsMux := middlewareCors(mux)
 	srv := &http.Server{
 		Handler: corsMux,
@@ -24,17 +26,31 @@ func main() {
 	log.Fatal(srv.ListenAndServe())
 }
 
+type apiConfig struct {
+	fileserverHits int
+}
+
 func HealthzHandler(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
 	w.Write([]byte("OK"))
 }
 
-// func AppHandler(w http.ResponseWriter, req *http.Request) {
-// 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-// 	w.WriteHeader(200)
-// 	w.Write([]byte("OK"))
-// }
+func (apiCfg *apiConfig) CountHandler(w http.ResponseWriter, req *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(200)
+	log.Println("CountHandler called")
+	hits := fmt.Sprintf("Hits: %d", apiCfg.fileserverHits)
+	w.Write([]byte(hits))
+}
+
+func (apiCfg *apiConfig) ResetHandler(w http.ResponseWriter, req *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(200)
+	apiCfg.fileserverHits = 0
+	hits := "Reset hits " + fmt.Sprintf("%d", apiCfg.fileserverHits)
+	w.Write([]byte(hits))
+}
 
 func middlewareCors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -45,6 +61,13 @@ func middlewareCors(next http.Handler) http.Handler {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cfg.fileserverHits++
 		next.ServeHTTP(w, r)
 	})
 }
