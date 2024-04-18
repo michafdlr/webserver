@@ -13,9 +13,9 @@ func main() {
 	apiCfg := apiConfig{fileserverHits: 0}
 	mux := http.NewServeMux()
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(FilePathRoot)))))
-	mux.HandleFunc("GET /healthz", HealthzHandler)
-	mux.HandleFunc("GET /metrics", apiCfg.CountHandler)
-	mux.HandleFunc("/reset", apiCfg.ResetHandler)
+	mux.HandleFunc("GET /api/healthz", HealthzHandler)
+	mux.HandleFunc("GET /admin/metrics", apiCfg.CountHandler)
+	mux.HandleFunc("/api/reset", apiCfg.ResetHandler)
 
 	corsMux := middlewareCors(mux)
 	srv := &http.Server{
@@ -37,11 +37,21 @@ func HealthzHandler(w http.ResponseWriter, req *http.Request) {
 }
 
 func (apiCfg *apiConfig) CountHandler(w http.ResponseWriter, req *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	var adminHtml = `<html>
+
+	<body>
+			<h1>Welcome, Chirpy Admin</h1>
+			<p>Chirpy has been visited %d times!</p>
+	</body>
+
+	</html>
+	`
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(200)
 	log.Println("CountHandler called")
-	hits := fmt.Sprintf("Hits: %d", apiCfg.fileserverHits)
-	w.Write([]byte(hits))
+	//hits := fmt.Sprintf(adminHtml, apiCfg.fileserverHits)
+	//fmt.Fprintf(w, adminHtml, apiCfg.fileserverHits)
+	w.Write([]byte(fmt.Sprintf(adminHtml, apiCfg.fileserverHits)))
 }
 
 func (apiCfg *apiConfig) ResetHandler(w http.ResponseWriter, req *http.Request) {
