@@ -2,23 +2,35 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/michafdlr/webserver/internal/database"
 )
 
 func main() {
 	const port = "8080"
 	const FilePathRoot = "."
+	db, err := database.NewDB("database.json")
+	if err != nil {
+		log.Fatalf("Error creating database: %v", err)
+	}
 
-	apiCfg := apiConfig{fileserverHits: 0}
+	apiCfg := apiConfig{fileserverHits: 0, DB: db}
+
 	mux := http.NewServeMux()
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(FilePathRoot)))))
 	mux.HandleFunc("GET /api/healthz", HealthzHandler)
 	mux.HandleFunc("GET /admin/metrics", apiCfg.CountHandler)
 	mux.HandleFunc("/api/reset", apiCfg.ResetHandler)
-	mux.HandleFunc("/api/validate_chirp", handler)
+	mux.HandleFunc("POST /api/chirps", apiCfg.PostHandler)
+	mux.HandleFunc("GET /api/chirps", apiCfg.GetHandler)
+	mux.HandleFunc("GET /api/chirps/{id}", apiCfg.SingleGetHandler)
 
 	corsMux := middlewareCors(mux)
 	srv := &http.Server{
@@ -31,6 +43,12 @@ func main() {
 
 type apiConfig struct {
 	fileserverHits int
+	DB             *database.DB
+}
+
+type Chirp struct {
+	Body string `json:"body"`
+	ID   int    `json:"id"`
 }
 
 func HealthzHandler(w http.ResponseWriter, req *http.Request) {
@@ -65,50 +83,127 @@ func (apiCfg *apiConfig) ResetHandler(w http.ResponseWriter, req *http.Request) 
 	w.Write([]byte(hits))
 }
 
-func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) error {
-	response, err := json.Marshal(payload)
-	if err != nil {
-		return err
+func respondWithError(w http.ResponseWriter, code int, msg string) {
+	if code > 499 {
+		log.Printf("Responding with 5XX error: %s", msg)
 	}
+	type errorResponse struct {
+		Error string `json:"error"`
+	}
+	respondWithJSON(w, code, errorResponse{
+		Error: msg,
+	})
+}
+
+func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	dat, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
 	w.WriteHeader(code)
-	w.Write(response)
-	return nil
+	w.Write(dat)
 }
 
-func respondWithError(w http.ResponseWriter, code int, msg string) error {
-	return respondWithJSON(w, code, map[string]string{"error": msg})
+func validateChirp(body string) (string, error) {
+	const maxChirpLength = 140
+	if len(body) > maxChirpLength {
+		return "", errors.New("Chirp is too long")
+	}
+
+	badWords := map[string]struct{}{
+		"kerfuffle": {},
+		"sharbert":  {},
+		"fornax":    {},
+	}
+	cleaned := getCleanedBody(body, badWords)
+	return cleaned, nil
 }
 
-func handler(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
-	type requestBody struct {
+func getCleanedBody(body string, badWords map[string]struct{}) string {
+	words := strings.Split(body, " ")
+	for i, word := range words {
+		loweredWord := strings.ToLower(word)
+		if _, ok := badWords[loweredWord]; ok {
+			words[i] = "****"
+		}
+	}
+	cleaned := strings.Join(words, " ")
+	return cleaned
+}
+
+func (apiCfg *apiConfig) PostHandler(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
 		Body string `json:"body"`
 	}
-	type responseBody struct {
-		Valid bool `json:"valid"`
-	}
 
-	dat, err := io.ReadAll(r.Body)
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
 	if err != nil {
-		respondWithError(w, 500, "couldn't read request")
-		return
-	}
-	params := requestBody{}
-	err = json.Unmarshal(dat, &params)
-	if err != nil {
-		respondWithError(w, 500, "couldn't unmarshal parameters")
+		respondWithError(w, http.StatusInternalServerError, "Couldn't decode parameters")
 		return
 	}
 
-	if len(params.Body) > 140 {
-		respondWithError(w, 400, "Chirp is too long")
-	} else {
-		respondWithJSON(w, 200, responseBody{
-			Valid: true,
+	cleaned, err := validateChirp(params.Body)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	chirp, err := apiCfg.DB.CreateChirp(cleaned)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create chirp")
+		return
+	}
+
+	respondWithJSON(w, http.StatusCreated, Chirp{
+		ID:   chirp.ID,
+		Body: chirp.Body,
+	})
+}
+
+func (apiCfg *apiConfig) GetHandler(w http.ResponseWriter, r *http.Request) {
+	dbChirps, err := apiCfg.DB.GetChirps()
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't retrieve chirps")
+		return
+	}
+
+	chirps := []Chirp{}
+	for _, dbChirp := range dbChirps {
+		chirps = append(chirps, Chirp{
+			ID:   dbChirp.ID,
+			Body: dbChirp.Body,
 		})
 	}
+
+	sort.Slice(chirps, func(i, j int) bool {
+		return chirps[i].ID < chirps[j].ID
+	})
+
+	respondWithJSON(w, http.StatusOK, chirps)
+}
+
+func (apiCfg *apiConfig) SingleGetHandler(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid ID")
+		return
+	}
+	dbChirps, err := apiCfg.DB.GetChirps()
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't retrieve chirps")
+		return
+	}
+	if id < 1 || id > len(dbChirps) {
+		respondWithError(w, http.StatusNotFound, "Chirp not found")
+		return
+	}
+	chirp := dbChirps[id-1]
+	respondWithJSON(w, http.StatusOK, Chirp{ID: chirp.ID, Body: chirp.Body})
 }
 
 func middlewareCors(next http.Handler) http.Handler {
