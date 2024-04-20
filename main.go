@@ -31,6 +31,7 @@ func main() {
 	mux.HandleFunc("POST /api/chirps", apiCfg.PostHandler)
 	mux.HandleFunc("GET /api/chirps", apiCfg.GetHandler)
 	mux.HandleFunc("GET /api/chirps/{id}", apiCfg.SingleGetHandler)
+	mux.HandleFunc("POST /api/users", apiCfg.PostUsersHandler)
 
 	corsMux := middlewareCors(mux)
 	srv := &http.Server{
@@ -49,6 +50,11 @@ type apiConfig struct {
 type Chirp struct {
 	Body string `json:"body"`
 	ID   int    `json:"id"`
+}
+
+type User struct {
+	Email string `json:"email"`
+	ID    int    `json:"id"`
 }
 
 func HealthzHandler(w http.ResponseWriter, req *http.Request) {
@@ -204,6 +210,30 @@ func (apiCfg *apiConfig) SingleGetHandler(w http.ResponseWriter, r *http.Request
 	}
 	chirp := dbChirps[id-1]
 	respondWithJSON(w, http.StatusOK, Chirp{ID: chirp.ID, Body: chirp.Body})
+}
+
+func (apiCfg *apiConfig) PostUsersHandler(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Email string `json:"email"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't decode parameters")
+		return
+	}
+
+	user, err := apiCfg.DB.CreateUser(params.Email)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create user")
+		return
+	}
+
+	respondWithJSON(w, http.StatusCreated, User{
+		Email: user.Email,
+		ID:    user.ID,
+	})
 }
 
 func middlewareCors(next http.Handler) http.Handler {

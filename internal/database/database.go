@@ -13,7 +13,12 @@ type DB struct {
 }
 
 type DBStructure struct {
-	Chirps map[int]Chirp `json:"chirps"`
+	Values map[int]any `json:"values"`
+}
+
+type User struct {
+	ID    int    `json:"id"`
+	Email string `json:"email"`
 }
 
 type Chirp struct {
@@ -36,12 +41,12 @@ func (db *DB) CreateChirp(body string) (Chirp, error) {
 		return Chirp{}, err
 	}
 
-	id := len(dbStructure.Chirps) + 1
+	id := len(dbStructure.Values) + 1
 	chirp := Chirp{
 		ID:   id,
 		Body: body,
 	}
-	dbStructure.Chirps[id] = chirp
+	dbStructure.Values[id] = chirp
 
 	err = db.writeDB(dbStructure)
 	if err != nil {
@@ -51,15 +56,39 @@ func (db *DB) CreateChirp(body string) (Chirp, error) {
 	return chirp, nil
 }
 
+func (db *DB) CreateUser(body string) (User, error) {
+	dbStructure, err := db.loadDB()
+	if err != nil {
+		return User{}, err
+	}
+
+	id := len(dbStructure.Values) + 1
+	user := User{
+		ID:    id,
+		Email: body,
+	}
+	dbStructure.Values[id] = user
+
+	err = db.writeDB(dbStructure)
+	if err != nil {
+		return User{}, err
+	}
+
+	return user, nil
+}
+
 func (db *DB) GetChirps() ([]Chirp, error) {
 	dbStructure, err := db.loadDB()
 	if err != nil {
 		return nil, err
 	}
 
-	chirps := make([]Chirp, 0, len(dbStructure.Chirps))
-	for _, chirp := range dbStructure.Chirps {
-		chirps = append(chirps, chirp)
+	chirps := make([]Chirp, 0, len(dbStructure.Values))
+	for _, v := range dbStructure.Values {
+		switch c := v.(type) {
+		case Chirp:
+			chirps = append(chirps, c)
+		}
 	}
 
 	return chirps, nil
@@ -67,7 +96,7 @@ func (db *DB) GetChirps() ([]Chirp, error) {
 
 func (db *DB) createDB() error {
 	dbStructure := DBStructure{
-		Chirps: map[int]Chirp{},
+		Values: map[int]any{},
 	}
 	return db.writeDB(dbStructure)
 }
