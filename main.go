@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/michafdlr/webserver/internal/database"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func main() {
@@ -32,6 +33,7 @@ func main() {
 	mux.HandleFunc("GET /api/chirps", apiCfg.GetHandler)
 	mux.HandleFunc("GET /api/chirps/{id}", apiCfg.SingleGetHandler)
 	mux.HandleFunc("POST /api/users", apiCfg.PostUsersHandler)
+	mux.HandleFunc("POST /api/login", apiCfg.ValidateUsersHandler)
 
 	corsMux := middlewareCors(mux)
 	srv := &http.Server{
@@ -53,6 +55,12 @@ type Chirp struct {
 }
 
 type User struct {
+	Email    string `json:"email"`
+	ID       int    `json:"id"`
+	Password string `json:"password"`
+}
+
+type UserDisplay struct {
 	Email string `json:"email"`
 	ID    int    `json:"id"`
 }
@@ -214,7 +222,8 @@ func (apiCfg *apiConfig) SingleGetHandler(w http.ResponseWriter, r *http.Request
 
 func (apiCfg *apiConfig) PostUsersHandler(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Email string `json:"email"`
+		Password string `json:"password"`
+		Email    string `json:"email"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
@@ -223,18 +232,84 @@ func (apiCfg *apiConfig) PostUsersHandler(w http.ResponseWriter, r *http.Request
 		respondWithError(w, http.StatusInternalServerError, "Couldn't decode parameters")
 		return
 	}
-
-	user, err := apiCfg.DB.CreateUser(params.Email)
+	user, err := apiCfg.DB.CreateUser(params.Email, params.Password)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't create user")
 		return
 	}
 
-	respondWithJSON(w, http.StatusCreated, User{
+	respondWithJSON(w, http.StatusCreated, UserDisplay{
 		Email: user.Email,
 		ID:    user.ID,
 	})
 }
+
+func (apiCfg *apiConfig) ValidateUsersHandler(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't decode parameters")
+		return
+	}
+	user, err := apiCfg.DB.GetUserByEmail(params.Email)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't find user")
+		return
+	}
+
+	// Decode password from base64 string to byte slice
+	// decodedPassword, err := base64.StdEncoding.DecodeString(user.Password)
+	// if err != nil {
+	// 	respondWithError(w, http.StatusInternalServerError, "Couldn't decode user password")
+	// 	return
+	// }
+
+	// Compare the decoded password with the provided password
+	log.Printf("user Email: %s, user Password: %s", user.Email, user.Password)
+	err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(params.Password))
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Wrong password")
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, UserDisplay{
+		Email: user.Email,
+		ID:    user.ID,
+	})
+}
+
+// func (apiCfg *apiConfig) ValidateUsersHandler(w http.ResponseWriter, r *http.Request) {
+// 	type parameters struct {
+// 		Password string `json:"password"`
+// 		Email    string `json:"email"`
+// 	}
+// 	decoder := json.NewDecoder(r.Body)
+// 	params := parameters{}
+// 	err := decoder.Decode(&params)
+// 	if err != nil {
+// 		respondWithError(w, http.StatusInternalServerError, "Couldn't decode parameters")
+// 		return
+// 	}
+// 	user, err := apiCfg.DB.GetUserByEmail(params.Email)
+// 	if err != nil {
+// 		respondWithError(w, http.StatusInternalServerError, "Couldn't find user")
+// 	}
+// 	log.Printf("Encrypted User PW: %v, given PW: %v", user.Password, []byte(params.Password))
+// 	err = bcrypt.CompareHashAndPassword(user.Password, []byte(params.Password))
+// 	if err != nil {
+// 		respondWithError(w, http.StatusUnauthorized, "Wrong password")
+// 		return
+// 	}
+// 	respondWithJSON(w, http.StatusOK, UserDisplay{
+// 		Email: user.Email,
+// 		ID:    user.ID,
+// 	})
+// }
 
 func middlewareCors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

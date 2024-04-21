@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"sync"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 type DB struct {
@@ -13,12 +15,14 @@ type DB struct {
 }
 
 type DBStructure struct {
-	Values map[int]any `json:"values"`
+	Chirps map[int]Chirp `json:"chirps"`
+	Users  map[int]User  `json:"users"`
 }
 
 type User struct {
-	ID    int    `json:"id"`
-	Email string `json:"email"`
+	ID       int    `json:"id"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 type Chirp struct {
@@ -41,12 +45,12 @@ func (db *DB) CreateChirp(body string) (Chirp, error) {
 		return Chirp{}, err
 	}
 
-	id := len(dbStructure.Values) + 1
+	id := len(dbStructure.Chirps) + 1
 	chirp := Chirp{
 		ID:   id,
 		Body: body,
 	}
-	dbStructure.Values[id] = chirp
+	dbStructure.Chirps[id] = chirp
 
 	err = db.writeDB(dbStructure)
 	if err != nil {
@@ -56,18 +60,30 @@ func (db *DB) CreateChirp(body string) (Chirp, error) {
 	return chirp, nil
 }
 
-func (db *DB) CreateUser(body string) (User, error) {
+func (db *DB) CreateUser(email, pw string) (User, error) {
 	dbStructure, err := db.loadDB()
 	if err != nil {
 		return User{}, err
 	}
 
-	id := len(dbStructure.Values) + 1
-	user := User{
-		ID:    id,
-		Email: body,
+	exists, err := db.CheckExistingUser(email)
+	if err != nil {
+		return User{}, err
 	}
-	dbStructure.Values[id] = user
+	if exists {
+		return User{}, errors.New("User already exists")
+	}
+	encryptedPassword, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
+	if err != nil {
+		return User{}, err
+	}
+	id := len(dbStructure.Users) + 1
+	user := User{
+		ID:       id,
+		Email:    email,
+		Password: string(encryptedPassword),
+	}
+	dbStructure.Users[id] = user
 
 	err = db.writeDB(dbStructure)
 	if err != nil {
@@ -77,18 +93,43 @@ func (db *DB) CreateUser(body string) (User, error) {
 	return user, nil
 }
 
+func (db *DB) CheckExistingUser(email string) (bool, error) {
+	dbStructure, err := db.loadDB()
+	if err != nil {
+		return true, err
+	}
+
+	for _, user := range dbStructure.Users {
+		if user.Email == email {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (db *DB) GetUserByEmail(email string) (User, error) {
+	dbStructure, err := db.loadDB()
+	if err != nil {
+		return User{}, err
+	}
+
+	for _, user := range dbStructure.Users {
+		if user.Email == email {
+			return user, nil
+		}
+	}
+	return User{}, errors.New("User does not exist")
+}
+
 func (db *DB) GetChirps() ([]Chirp, error) {
 	dbStructure, err := db.loadDB()
 	if err != nil {
 		return nil, err
 	}
 
-	chirps := make([]Chirp, 0, len(dbStructure.Values))
-	for _, v := range dbStructure.Values {
-		switch c := v.(type) {
-		case Chirp:
-			chirps = append(chirps, c)
-		}
+	chirps := make([]Chirp, 0, len(dbStructure.Chirps))
+	for _, chirp := range dbStructure.Chirps {
+		chirps = append(chirps, chirp)
 	}
 
 	return chirps, nil
@@ -96,7 +137,8 @@ func (db *DB) GetChirps() ([]Chirp, error) {
 
 func (db *DB) createDB() error {
 	dbStructure := DBStructure{
-		Values: map[int]any{},
+		Chirps: map[int]Chirp{},
+		Users:  map[int]User{},
 	}
 	return db.writeDB(dbStructure)
 }
@@ -141,3 +183,32 @@ func (db *DB) writeDB(dbStructure DBStructure) error {
 	}
 	return nil
 }
+
+// func (db *DB) writeDB(dbStructure DBStructure) error {
+// 	db.mu.Lock()
+// 	defer db.mu.Unlock()
+
+// 	// Decode password before marshaling to JSON
+// 	for id, v := range dbStructure.Values {
+// 		if user, ok := v.(User); ok {
+// 			// Decode password from base64 string to byte slice
+// 			decodedPassword, err := base64.StdEncoding.DecodeString(user.Password)
+// 			if err != nil {
+// 				return err
+// 			}
+// 			user.Password = string(decodedPassword)
+// 			dbStructure.Values[id] = user
+// 		}
+// 	}
+
+// 	dat, err := json.Marshal(dbStructure)
+// 	if err != nil {
+// 		return err
+// 	}
+
+// 	err = os.WriteFile(db.path, dat, 0600)
+// 	if err != nil {
+// 		return err
+// 	}
+// 	return nil
+// }
