@@ -6,23 +6,33 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/joho/godotenv"
 	"github.com/michafdlr/webserver/internal/database"
 	"golang.org/x/crypto/bcrypt"
 )
 
 func main() {
+	godotenv.Load()
 	const port = "8080"
 	const FilePathRoot = "."
 	db, err := database.NewDB("database.json")
 	if err != nil {
 		log.Fatalf("Error creating database: %v", err)
 	}
+	jwtSecret := os.Getenv("JWT_SECRET")
 
-	apiCfg := apiConfig{fileserverHits: 0, DB: db}
+	apiCfg := apiConfig{
+		fileserverHits: 0,
+		DB:             db,
+		JwtSecret:      jwtSecret,
+	}
 
 	mux := http.NewServeMux()
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(FilePathRoot)))))
@@ -33,6 +43,7 @@ func main() {
 	mux.HandleFunc("GET /api/chirps", apiCfg.GetHandler)
 	mux.HandleFunc("GET /api/chirps/{id}", apiCfg.SingleGetHandler)
 	mux.HandleFunc("POST /api/users", apiCfg.PostUsersHandler)
+	mux.HandleFunc("PUT /api/users", apiCfg.PutUsersHandler)
 	mux.HandleFunc("POST /api/login", apiCfg.ValidateUsersHandler)
 
 	corsMux := middlewareCors(mux)
@@ -47,6 +58,7 @@ func main() {
 type apiConfig struct {
 	fileserverHits int
 	DB             *database.DB
+	JwtSecret      string
 }
 
 type Chirp struct {
@@ -58,11 +70,18 @@ type User struct {
 	Email    string `json:"email"`
 	ID       int    `json:"id"`
 	Password string `json:"password"`
+	Token    string `json:"token"`
 }
 
 type UserDisplay struct {
 	Email string `json:"email"`
 	ID    int    `json:"id"`
+}
+
+type UserTokenDisplay struct {
+	//Email string `json:"email"`
+	//ID    int    `json:"id"`
+	Token string `json:"token"`
 }
 
 func HealthzHandler(w http.ResponseWriter, req *http.Request) {
@@ -244,10 +263,63 @@ func (apiCfg *apiConfig) PostUsersHandler(w http.ResponseWriter, r *http.Request
 	})
 }
 
+func (apiCfg *apiConfig) PutUsersHandler(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Password string `json:"password"`
+		Email    string `json:"email"`
+	}
+	tokenString, found := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	log.Printf("Token:%s", tokenString)
+	if !found {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't get token")
+		return
+	}
+	claimsStruct := jwt.RegisteredClaims{}
+	token, err := jwt.ParseWithClaims(tokenString, &claimsStruct, func(token *jwt.Token) (interface{}, error) {
+		return []byte(apiCfg.JwtSecret), nil
+	})
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Token is invalid")
+		return
+	}
+	userID, err := token.Claims.GetSubject()
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't get user ID")
+		return
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err = decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't decode parameters")
+		return
+	}
+	userIDInt, err := strconv.Atoi(userID)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't convert user ID")
+		return
+	}
+	user, err := apiCfg.DB.UpdateUser(userIDInt, params.Email, params.Password)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't update user")
+		return
+	}
+
+	respondWithJSON(w, http.StatusCreated, UserDisplay{
+		Email: user.Email,
+		ID:    user.ID,
+	})
+}
+
 func (apiCfg *apiConfig) ValidateUsersHandler(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
+		Expires  int    `json:"expires_in_seconds"`
+	}
+	type response struct {
+		Token string `json:"token"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
@@ -261,25 +333,32 @@ func (apiCfg *apiConfig) ValidateUsersHandler(w http.ResponseWriter, r *http.Req
 		respondWithError(w, http.StatusInternalServerError, "Couldn't find user")
 		return
 	}
-
-	// Decode password from base64 string to byte slice
-	// decodedPassword, err := base64.StdEncoding.DecodeString(user.Password)
-	// if err != nil {
-	// 	respondWithError(w, http.StatusInternalServerError, "Couldn't decode user password")
-	// 	return
-	// }
-
-	// Compare the decoded password with the provided password
-	log.Printf("user Email: %s, user Password: %s", user.Email, user.Password)
 	err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(params.Password))
 	if err != nil {
 		respondWithError(w, http.StatusUnauthorized, "Wrong password")
 		return
 	}
+	var ExpiresInSeconds int
+	if params.Expires <= 0 || params.Expires > 24*60*60 {
+		ExpiresInSeconds = 24 * 60 * 60
+	} else {
+		ExpiresInSeconds = params.Expires
+	}
+	Claims := jwt.RegisteredClaims{
+		Issuer:    "chirpy",
+		IssuedAt:  jwt.NewNumericDate(time.Now().UTC()),
+		ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(time.Second * time.Duration(ExpiresInSeconds))),
+		Subject:   fmt.Sprintf("%d", user.ID),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, Claims)
+	ss, err := token.SignedString([]byte(apiCfg.JwtSecret))
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't sign secret")
+	}
+	user.Token = ss
 
-	respondWithJSON(w, http.StatusOK, UserDisplay{
-		Email: user.Email,
-		ID:    user.ID,
+	respondWithJSON(w, http.StatusOK, response{
+		Token: ss,
 	})
 }
 
