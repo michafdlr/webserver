@@ -45,6 +45,8 @@ func main() {
 	mux.HandleFunc("POST /api/users", apiCfg.PostUsersHandler)
 	mux.HandleFunc("PUT /api/users", apiCfg.PutUsersHandler)
 	mux.HandleFunc("POST /api/login", apiCfg.ValidateUsersHandler)
+	mux.HandleFunc("POST /api/revoke", apiCfg.RevokeHandler)
+	mux.HandleFunc("POST /api/refresh", apiCfg.RefreshHandler)
 
 	corsMux := middlewareCors(mux)
 	srv := &http.Server{
@@ -67,10 +69,16 @@ type Chirp struct {
 }
 
 type User struct {
-	Email    string `json:"email"`
-	ID       int    `json:"id"`
-	Password string `json:"password"`
-	Token    string `json:"token"`
+	Email        string `json:"email"`
+	ID           int    `json:"id"`
+	Password     string `json:"password"`
+	Token        string `json:"token"`
+	RefreshToken string `json:"refresh_token"`
+}
+
+type RefreshToken struct {
+	//ID      string `json:"id"`
+	Revoked bool `json:"revoked"`
 }
 
 type UserDisplay struct {
@@ -81,7 +89,8 @@ type UserDisplay struct {
 type UserTokenDisplay struct {
 	//Email string `json:"email"`
 	//ID    int    `json:"id"`
-	Token string `json:"token"`
+	Token        string `json:"token"`
+	RefreshToken string `json:"refresh_token"`
 }
 
 func HealthzHandler(w http.ResponseWriter, req *http.Request) {
@@ -282,6 +291,15 @@ func (apiCfg *apiConfig) PutUsersHandler(w http.ResponseWriter, r *http.Request)
 		respondWithError(w, http.StatusUnauthorized, "Token is invalid")
 		return
 	}
+	issuer, err := token.Claims.GetIssuer()
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't get issuer")
+		return
+	}
+	if issuer == "chirpy-refresh" {
+		respondWithError(w, http.StatusUnauthorized, "Got Refresh-token")
+		return
+	}
 	userID, err := token.Claims.GetSubject()
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't get user ID")
@@ -306,7 +324,7 @@ func (apiCfg *apiConfig) PutUsersHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	respondWithJSON(w, http.StatusCreated, UserDisplay{
+	respondWithJSON(w, http.StatusOK, UserDisplay{
 		Email: user.Email,
 		ID:    user.ID,
 	})
@@ -316,10 +334,11 @@ func (apiCfg *apiConfig) ValidateUsersHandler(w http.ResponseWriter, r *http.Req
 	type parameters struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
-		Expires  int    `json:"expires_in_seconds"`
+		//Expires  int    `json:"expires_in_seconds"`
 	}
 	type response struct {
-		Token string `json:"token"`
+		Token        string `json:"token"`
+		RefreshToken string `json:"refresh_token"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
@@ -338,57 +357,195 @@ func (apiCfg *apiConfig) ValidateUsersHandler(w http.ResponseWriter, r *http.Req
 		respondWithError(w, http.StatusUnauthorized, "Wrong password")
 		return
 	}
-	var ExpiresInSeconds int
-	if params.Expires <= 0 || params.Expires > 24*60*60 {
-		ExpiresInSeconds = 24 * 60 * 60
-	} else {
-		ExpiresInSeconds = params.Expires
-	}
-	Claims := jwt.RegisteredClaims{
-		Issuer:    "chirpy",
+
+	AccessClaims := jwt.RegisteredClaims{
+		Issuer:    "chirpy-access",
 		IssuedAt:  jwt.NewNumericDate(time.Now().UTC()),
-		ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(time.Second * time.Duration(ExpiresInSeconds))),
+		ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(time.Hour * 1)),
 		Subject:   fmt.Sprintf("%d", user.ID),
 	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, Claims)
-	ss, err := token.SignedString([]byte(apiCfg.JwtSecret))
+	RefreshClaims := jwt.RegisteredClaims{
+		Issuer:    "chirpy-refresh",
+		IssuedAt:  jwt.NewNumericDate(time.Now().UTC()),
+		ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(time.Hour * 24 * 60)),
+		Subject:   fmt.Sprintf("%d", user.ID),
+	}
+	accesstoken := jwt.NewWithClaims(jwt.SigningMethodHS256, AccessClaims)
+	signedAccessToken, err := accesstoken.SignedString([]byte(apiCfg.JwtSecret))
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't sign secret")
+		return
 	}
-	user.Token = ss
+
+	refreshtoken := jwt.NewWithClaims(jwt.SigningMethodHS256, RefreshClaims)
+	signedRefreshToken, err := refreshtoken.SignedString([]byte(apiCfg.JwtSecret))
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't sign secret")
+		return
+	}
+	userID := user.ID
+	err = apiCfg.DB.UpdateUserToken(userID, signedAccessToken, "access")
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't update access token")
+	}
+	err = apiCfg.DB.UpdateUserToken(userID, signedAccessToken, "refresh")
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't update refresh token")
+	}
+	_, err = apiCfg.DB.CreateRefreshToken(signedRefreshToken)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Couldn't create refresh token in DB")
+		return
+	}
 
 	respondWithJSON(w, http.StatusOK, response{
-		Token: ss,
+		Token:        signedAccessToken,
+		RefreshToken: signedRefreshToken,
 	})
 }
 
-// func (apiCfg *apiConfig) ValidateUsersHandler(w http.ResponseWriter, r *http.Request) {
-// 	type parameters struct {
-// 		Password string `json:"password"`
-// 		Email    string `json:"email"`
-// 	}
-// 	decoder := json.NewDecoder(r.Body)
-// 	params := parameters{}
-// 	err := decoder.Decode(&params)
-// 	if err != nil {
-// 		respondWithError(w, http.StatusInternalServerError, "Couldn't decode parameters")
-// 		return
-// 	}
-// 	user, err := apiCfg.DB.GetUserByEmail(params.Email)
-// 	if err != nil {
-// 		respondWithError(w, http.StatusInternalServerError, "Couldn't find user")
-// 	}
-// 	log.Printf("Encrypted User PW: %v, given PW: %v", user.Password, []byte(params.Password))
-// 	err = bcrypt.CompareHashAndPassword(user.Password, []byte(params.Password))
-// 	if err != nil {
-// 		respondWithError(w, http.StatusUnauthorized, "Wrong password")
-// 		return
-// 	}
-// 	respondWithJSON(w, http.StatusOK, UserDisplay{
-// 		Email: user.Email,
-// 		ID:    user.ID,
-// 	})
-// }
+func (apiCfg *apiConfig) RefreshHandler(w http.ResponseWriter, r *http.Request) {
+	tokenString, found := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	log.Printf("Token:%s", tokenString)
+	if !found {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't get token")
+		return
+	}
+	claimsStruct := jwt.RegisteredClaims{}
+	token, err := jwt.ParseWithClaims(tokenString, &claimsStruct, func(token *jwt.Token) (interface{}, error) {
+		return []byte(apiCfg.JwtSecret), nil
+	})
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Token is invalid")
+		return
+	}
+	issuer, err := token.Claims.GetIssuer()
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't get issuer")
+		return
+	}
+	if issuer == "chirpy-access" {
+		respondWithError(w, http.StatusUnauthorized, "Got Access-token")
+		return
+	}
+
+	userID, err := token.Claims.GetSubject()
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't get user ID")
+		return
+	}
+	userIDInt, err := strconv.Atoi(userID)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't transform userid to int")
+		return
+	}
+	// user, err := apiCfg.DB.GetUserByID(userIDInt)
+	// if err != nil {
+	// 	respondWithError(w, http.StatusInternalServerError, "Couldn't retrieve user")
+	// 	return
+	// }
+
+	revoked, err := apiCfg.DB.CheckRevokedToken(tokenString)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Couldn't check if token was revoked")
+		return
+	}
+	if revoked {
+		respondWithError(w, http.StatusUnauthorized, "Refresh token was revoked")
+		return
+	}
+
+	AccessClaims := jwt.RegisteredClaims{
+		Issuer:    "chirpy-access",
+		IssuedAt:  jwt.NewNumericDate(time.Now().UTC()),
+		ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(time.Hour * time.Duration(1))),
+		Subject:   fmt.Sprintf("%d", userIDInt),
+	}
+	accesstoken := jwt.NewWithClaims(jwt.SigningMethodHS256, AccessClaims)
+	signedAccessToken, err := accesstoken.SignedString([]byte(apiCfg.JwtSecret))
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't sign secret")
+		return
+	}
+
+	err = apiCfg.DB.UpdateUserToken(userIDInt, signedAccessToken, "access")
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't update access token")
+		return
+	}
+	type response struct {
+		Token string `json:"token"`
+	}
+	respondWithJSON(w, http.StatusOK, response{
+		Token: signedAccessToken,
+	})
+}
+
+func (apiCfg *apiConfig) RevokeHandler(w http.ResponseWriter, r *http.Request) {
+	tokenString, found := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	log.Printf("Token:%s", tokenString)
+	if !found {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't get token")
+		return
+	}
+	claimsStruct := jwt.RegisteredClaims{}
+	token, err := jwt.ParseWithClaims(tokenString, &claimsStruct, func(token *jwt.Token) (interface{}, error) {
+		return []byte(apiCfg.JwtSecret), nil
+	})
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Token is invalid")
+		return
+	}
+	issuer, err := token.Claims.GetIssuer()
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't get issuer")
+		return
+	}
+	if issuer == "chirpy-access" {
+		respondWithError(w, http.StatusBadRequest, "Got Access-token")
+		return
+	}
+
+	// userID, err := token.Claims.GetSubject()
+	// if err != nil {
+	// 	respondWithError(w, http.StatusInternalServerError, "Couldn't get user ID")
+	// 	return
+	// }
+	// userIDInt, err := strconv.Atoi(userID)
+	// if err != nil {
+	// 	respondWithError(w, http.StatusInternalServerError, "Couldn't transform userid to int")
+	// 	return
+	// }
+	// user, err := apiCfg.DB.GetUserByID(userIDInt)
+	// if err != nil {
+	// 	respondWithError(w, http.StatusInternalServerError, "Couldn't retrieve user")
+	// 	return
+	// }
+
+	err = apiCfg.DB.RevokeToken(tokenString)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't revoke Token")
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+
+	// userID, err := token.Claims.GetSubject()
+	// if err != nil {
+	// 	respondWithError(w, http.StatusInternalServerError, "Couldn't get user ID")
+	// 	return
+	// }
+	// userIDInt, err := strconv.Atoi(userID)
+	// if err != nil {
+	// 	respondWithError(w, http.StatusInternalServerError, "Couldn't transform userid to int")
+	// 	return
+	// }
+	// user, err := apiCfg.DB.GetUserByID(userIDInt)
+	// if err != nil {
+	// 	respondWithError(w, http.StatusInternalServerError, "Couldn't retrieve user")
+	// }
+	// user.RefreshToken
+}
 
 func middlewareCors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -15,15 +15,22 @@ type DB struct {
 }
 
 type DBStructure struct {
-	Chirps map[int]Chirp `json:"chirps"`
-	Users  map[int]User  `json:"users"`
+	Chirps        map[int]Chirp           `json:"chirps"`
+	Users         map[int]User            `json:"users"`
+	RefreshTokens map[string]RefreshToken `json:"refresh_tokens"`
 }
 
 type User struct {
-	ID       int    `json:"id"`
-	Email    string `json:"email"`
-	Password string `json:"password"`
-	Token    string `json:"token"`
+	ID           int    `json:"id"`
+	Email        string `json:"email"`
+	Password     string `json:"password"`
+	Token        string `json:"token"`
+	RefreshToken string `json:"refresh_token"`
+}
+
+type RefreshToken struct {
+	//ID      string `json:"id"`
+	Revoked bool `json:"revoked"`
 }
 
 type Chirp struct {
@@ -61,6 +68,78 @@ func (db *DB) CreateChirp(body string) (Chirp, error) {
 	return chirp, nil
 }
 
+func (db *DB) CreateRefreshToken(token string) (RefreshToken, error) {
+	dbStructure, err := db.loadDB()
+	if err != nil {
+		return RefreshToken{}, err
+	}
+
+	refreshToken := RefreshToken{
+		//ID:      token,
+		Revoked: false,
+	}
+
+	//id := len(dbStructure.RefreshTokens) + 1
+	dbStructure.RefreshTokens[token] = refreshToken
+
+	err = db.writeDB(dbStructure)
+	if err != nil {
+		return RefreshToken{}, err
+	}
+
+	return refreshToken, nil
+}
+
+func (db *DB) RevokeToken(token string) error {
+	dbStructure, err := db.loadDB()
+	if err != nil {
+		return err
+	}
+
+	refreshToken := dbStructure.RefreshTokens[token]
+	refreshToken.Revoked = true
+	dbStructure.RefreshTokens[token] = refreshToken
+
+	err = db.writeDB(dbStructure)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (db *DB) CheckRevokedToken(token string) (bool, error) {
+	dbStructure, err := db.loadDB()
+	if err != nil {
+		return true, err
+	}
+
+	refreshToken := dbStructure.RefreshTokens[token]
+	if refreshToken.Revoked {
+		return true, nil
+	}
+	return false, nil
+}
+
+func (db *DB) UpdateUserToken(id int, token, ttype string) error {
+	dbStructure, err := db.loadDB()
+	if err != nil {
+		return err
+	}
+	user := dbStructure.Users[id]
+	if ttype == "access" {
+		user.Token = token
+	} else if ttype == "refresh" {
+		user.RefreshToken = token
+	}
+	dbStructure.Users[id] = user
+	err = db.writeDB(dbStructure)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func (db *DB) CreateUser(email, pw string) (User, error) {
 	dbStructure, err := db.loadDB()
 	if err != nil {
@@ -81,10 +160,11 @@ func (db *DB) CreateUser(email, pw string) (User, error) {
 
 	id := len(dbStructure.Users) + 1
 	user := User{
-		ID:       id,
-		Email:    email,
-		Password: string(encryptedPassword),
-		Token:    "",
+		ID:           id,
+		Email:        email,
+		Password:     string(encryptedPassword),
+		Token:        "",
+		RefreshToken: "",
 	}
 
 	dbStructure.Users[id] = user
@@ -102,10 +182,6 @@ func (db *DB) UpdateUser(id int, email, pw string) (User, error) {
 	if err != nil {
 		return User{}, err
 	}
-	if id > len(dbStructure.Users) {
-		return User{}, errors.New("no valid id")
-	}
-
 	user := dbStructure.Users[id]
 	encryptedPassword, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
 	if err != nil {
@@ -153,6 +229,17 @@ func (db *DB) GetUserByEmail(email string) (User, error) {
 	return User{}, errors.New("User does not exist")
 }
 
+func (db *DB) GetUserByID(id int) (User, error) {
+	dbStructure, err := db.loadDB()
+	if err != nil {
+		return User{}, err
+	}
+	if id > len(dbStructure.Users) {
+		return User{}, errors.New("ID not present")
+	}
+	return dbStructure.Users[id], nil
+}
+
 func (db *DB) GetChirps() ([]Chirp, error) {
 	dbStructure, err := db.loadDB()
 	if err != nil {
@@ -169,8 +256,9 @@ func (db *DB) GetChirps() ([]Chirp, error) {
 
 func (db *DB) createDB() error {
 	dbStructure := DBStructure{
-		Chirps: map[int]Chirp{},
-		Users:  map[int]User{},
+		Chirps:        map[int]Chirp{},
+		Users:         map[int]User{},
+		RefreshTokens: map[string]RefreshToken{},
 	}
 	return db.writeDB(dbStructure)
 }
@@ -215,32 +303,3 @@ func (db *DB) writeDB(dbStructure DBStructure) error {
 	}
 	return nil
 }
-
-// func (db *DB) writeDB(dbStructure DBStructure) error {
-// 	db.mu.Lock()
-// 	defer db.mu.Unlock()
-
-// 	// Decode password before marshaling to JSON
-// 	for id, v := range dbStructure.Values {
-// 		if user, ok := v.(User); ok {
-// 			// Decode password from base64 string to byte slice
-// 			decodedPassword, err := base64.StdEncoding.DecodeString(user.Password)
-// 			if err != nil {
-// 				return err
-// 			}
-// 			user.Password = string(decodedPassword)
-// 			dbStructure.Values[id] = user
-// 		}
-// 	}
-
-// 	dat, err := json.Marshal(dbStructure)
-// 	if err != nil {
-// 		return err
-// 	}
-
-// 	err = os.WriteFile(db.path, dat, 0600)
-// 	if err != nil {
-// 		return err
-// 	}
-// 	return nil
-// }
