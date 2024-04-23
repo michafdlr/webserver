@@ -39,9 +39,9 @@ func main() {
 	mux.HandleFunc("GET /api/healthz", HealthzHandler)
 	mux.HandleFunc("GET /admin/metrics", apiCfg.CountHandler)
 	mux.HandleFunc("/api/reset", apiCfg.ResetHandler)
-	mux.HandleFunc("POST /api/chirps", apiCfg.PostHandler)
-	mux.HandleFunc("GET /api/chirps", apiCfg.GetHandler)
-	mux.HandleFunc("GET /api/chirps/{id}", apiCfg.SingleGetHandler)
+	mux.HandleFunc("POST /api/chirps", apiCfg.PostChirpHandler)
+	mux.HandleFunc("GET /api/chirps", apiCfg.GetChirpHandler)
+	mux.HandleFunc("GET /api/chirps/{id}", apiCfg.SingleChirpGetHandler)
 	mux.HandleFunc("POST /api/users", apiCfg.PostUsersHandler)
 	mux.HandleFunc("PUT /api/users", apiCfg.PutUsersHandler)
 	mux.HandleFunc("POST /api/login", apiCfg.ValidateUsersHandler)
@@ -64,8 +64,9 @@ type apiConfig struct {
 }
 
 type Chirp struct {
-	Body string `json:"body"`
-	ID   int    `json:"id"`
+	Body     string `json:"body"`
+	ID       int    `json:"id"`
+	AuthorID int    `json:"author_id"`
 }
 
 type User struct {
@@ -176,7 +177,7 @@ func getCleanedBody(body string, badWords map[string]struct{}) string {
 	return cleaned
 }
 
-func (apiCfg *apiConfig) PostHandler(w http.ResponseWriter, r *http.Request) {
+func (apiCfg *apiConfig) PostChirpHandler(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Body string `json:"body"`
 	}
@@ -195,19 +196,20 @@ func (apiCfg *apiConfig) PostHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chirp, err := apiCfg.DB.CreateChirp(cleaned)
+	chirp, err := apiCfg.DB.CreateChirp(cleaned, apiCfg.JwtSecret, r.Header)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't create chirp")
 		return
 	}
 
 	respondWithJSON(w, http.StatusCreated, Chirp{
-		ID:   chirp.ID,
-		Body: chirp.Body,
+		ID:       chirp.ID,
+		Body:     chirp.Body,
+		AuthorID: chirp.AuthorID,
 	})
 }
 
-func (apiCfg *apiConfig) GetHandler(w http.ResponseWriter, r *http.Request) {
+func (apiCfg *apiConfig) GetChirpHandler(w http.ResponseWriter, r *http.Request) {
 	dbChirps, err := apiCfg.DB.GetChirps()
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't retrieve chirps")
@@ -217,8 +219,9 @@ func (apiCfg *apiConfig) GetHandler(w http.ResponseWriter, r *http.Request) {
 	chirps := []Chirp{}
 	for _, dbChirp := range dbChirps {
 		chirps = append(chirps, Chirp{
-			ID:   dbChirp.ID,
-			Body: dbChirp.Body,
+			ID:       dbChirp.ID,
+			Body:     dbChirp.Body,
+			AuthorID: dbChirp.AuthorID,
 		})
 	}
 
@@ -229,7 +232,7 @@ func (apiCfg *apiConfig) GetHandler(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusOK, chirps)
 }
 
-func (apiCfg *apiConfig) SingleGetHandler(w http.ResponseWriter, r *http.Request) {
+func (apiCfg *apiConfig) SingleChirpGetHandler(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(r.PathValue("id"))
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Invalid ID")
@@ -245,7 +248,7 @@ func (apiCfg *apiConfig) SingleGetHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 	chirp := dbChirps[id-1]
-	respondWithJSON(w, http.StatusOK, Chirp{ID: chirp.ID, Body: chirp.Body})
+	respondWithJSON(w, http.StatusOK, Chirp{ID: chirp.ID, Body: chirp.Body, AuthorID: chirp.AuthorID})
 }
 
 func (apiCfg *apiConfig) PostUsersHandler(w http.ResponseWriter, r *http.Request) {

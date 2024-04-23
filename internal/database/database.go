@@ -3,9 +3,13 @@ package database
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 
+	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -34,8 +38,9 @@ type RefreshToken struct {
 }
 
 type Chirp struct {
-	ID   int    `json:"id"`
-	Body string `json:"body"`
+	ID       int    `json:"id"`
+	Body     string `json:"body"`
+	AuthorID int    `json:"author_id"`
 }
 
 func NewDB(path string) (*DB, error) {
@@ -47,16 +52,42 @@ func NewDB(path string) (*DB, error) {
 	return db, err
 }
 
-func (db *DB) CreateChirp(body string) (Chirp, error) {
+func (db *DB) CreateChirp(body, secret string, header http.Header) (Chirp, error) {
 	dbStructure, err := db.loadDB()
 	if err != nil {
 		return Chirp{}, err
 	}
-
+	tokenString, found := strings.CutPrefix(header.Get("Authorization"), "Bearer ")
+	if !found {
+		return Chirp{}, errors.New("authorization token missing")
+	}
+	claimsStruct := jwt.RegisteredClaims{}
+	token, err := jwt.ParseWithClaims(tokenString, &claimsStruct, func(token *jwt.Token) (interface{}, error) {
+		return []byte(secret), nil
+	})
+	if err != nil {
+		return Chirp{}, errors.New("couldn't parse Claims")
+	}
+	issuer, err := token.Claims.GetIssuer()
+	if err != nil {
+		return Chirp{}, errors.New("couldn't get issuer")
+	}
+	if issuer == "chirpy-refresh" {
+		return Chirp{}, errors.New("got refresh token")
+	}
+	userID, err := token.Claims.GetSubject()
+	if err != nil {
+		return Chirp{}, errors.New("couldn't get user")
+	}
+	userIDInt, err := strconv.Atoi(userID)
+	if err != nil {
+		return Chirp{}, errors.New("couldn't convert userid")
+	}
 	id := len(dbStructure.Chirps) + 1
 	chirp := Chirp{
-		ID:   id,
-		Body: body,
+		ID:       id,
+		Body:     body,
+		AuthorID: userIDInt,
 	}
 	dbStructure.Chirps[id] = chirp
 
