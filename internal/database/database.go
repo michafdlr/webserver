@@ -99,6 +99,51 @@ func (db *DB) CreateChirp(body, secret string, header http.Header) (Chirp, error
 	return chirp, nil
 }
 
+func (db *DB) DelteChirp(id int, secret string, header http.Header) (int, error) {
+	dbStructure, err := db.loadDB()
+	if err != nil {
+		return http.StatusInternalServerError, err
+	}
+	tokenString, found := strings.CutPrefix(header.Get("Authorization"), "Bearer ")
+	if !found {
+		return http.StatusInternalServerError, errors.New("authorization token missing")
+	}
+	claimsStruct := jwt.RegisteredClaims{}
+	token, err := jwt.ParseWithClaims(tokenString, &claimsStruct, func(token *jwt.Token) (interface{}, error) {
+		return []byte(secret), nil
+	})
+	if err != nil {
+		return http.StatusInternalServerError, errors.New("couldn't parse Claims")
+	}
+	issuer, err := token.Claims.GetIssuer()
+	if err != nil {
+		return http.StatusInternalServerError, errors.New("couldn't get issuer")
+	}
+	if issuer == "chirpy-refresh" {
+		return http.StatusUnauthorized, errors.New("got refresh token")
+	}
+	userID, err := token.Claims.GetSubject()
+	if err != nil {
+		return http.StatusInternalServerError, errors.New("couldn't get user")
+	}
+	userIDInt, err := strconv.Atoi(userID)
+	if err != nil {
+		return http.StatusInternalServerError, errors.New("couldn't convert userid")
+	}
+	chirp := dbStructure.Chirps[id]
+	if chirp.AuthorID != userIDInt {
+		return http.StatusForbidden, nil
+	}
+	delete(dbStructure.Chirps, id)
+
+	err = db.writeDB(dbStructure)
+	if err != nil {
+		return http.StatusInternalServerError, err
+	}
+
+	return http.StatusOK, nil
+}
+
 func (db *DB) CreateRefreshToken(token string) (RefreshToken, error) {
 	dbStructure, err := db.loadDB()
 	if err != nil {

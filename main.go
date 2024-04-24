@@ -42,6 +42,7 @@ func main() {
 	mux.HandleFunc("POST /api/chirps", apiCfg.PostChirpHandler)
 	mux.HandleFunc("GET /api/chirps", apiCfg.GetChirpHandler)
 	mux.HandleFunc("GET /api/chirps/{id}", apiCfg.SingleChirpGetHandler)
+	mux.HandleFunc("DELETE /api/chirps/{id}", apiCfg.DeleteChirpHandler)
 	mux.HandleFunc("POST /api/users", apiCfg.PostUsersHandler)
 	mux.HandleFunc("PUT /api/users", apiCfg.PutUsersHandler)
 	mux.HandleFunc("POST /api/login", apiCfg.ValidateUsersHandler)
@@ -249,6 +250,20 @@ func (apiCfg *apiConfig) SingleChirpGetHandler(w http.ResponseWriter, r *http.Re
 	}
 	chirp := dbChirps[id-1]
 	respondWithJSON(w, http.StatusOK, Chirp{ID: chirp.ID, Body: chirp.Body, AuthorID: chirp.AuthorID})
+}
+
+func (apiConfig *apiConfig) DeleteChirpHandler(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid ID")
+		return
+	}
+	status, err := apiConfig.DB.DelteChirp(id, apiConfig.JwtSecret, r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "couldn't delete chirp")
+		return
+	}
+	w.WriteHeader(status)
 }
 
 func (apiCfg *apiConfig) PostUsersHandler(w http.ResponseWriter, r *http.Request) {
