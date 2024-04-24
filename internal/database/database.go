@@ -30,6 +30,7 @@ type User struct {
 	Password     string `json:"password"`
 	Token        string `json:"token"`
 	RefreshToken string `json:"refresh_token"`
+	IsChirpyRed  bool   `json:"is_chirpy_red"`
 }
 
 type RefreshToken struct {
@@ -241,6 +242,7 @@ func (db *DB) CreateUser(email, pw string) (User, error) {
 		Password:     string(encryptedPassword),
 		Token:        "",
 		RefreshToken: "",
+		IsChirpyRed:  false,
 	}
 
 	dbStructure.Users[id] = user
@@ -251,6 +253,26 @@ func (db *DB) CreateUser(email, pw string) (User, error) {
 	}
 
 	return user, nil
+}
+
+func (db *DB) UpgradeUser(id int) (int, error) {
+	dbStructure, err := db.loadDB()
+	if err != nil {
+		return http.StatusInternalServerError, err
+	}
+	if id < 0 || id > len(dbStructure.Users) {
+		return http.StatusNotFound, errors.New("couldn't find user")
+	}
+	user := dbStructure.Users[id]
+	user.IsChirpyRed = true
+	dbStructure.Users[id] = user
+
+	err = db.writeDB(dbStructure)
+	if err != nil {
+		return http.StatusInternalServerError, err
+	}
+
+	return http.StatusOK, nil
 }
 
 func (db *DB) UpdateUser(id int, email, pw string) (User, error) {

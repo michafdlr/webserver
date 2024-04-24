@@ -48,7 +48,7 @@ func main() {
 	mux.HandleFunc("POST /api/login", apiCfg.ValidateUsersHandler)
 	mux.HandleFunc("POST /api/revoke", apiCfg.RevokeHandler)
 	mux.HandleFunc("POST /api/refresh", apiCfg.RefreshHandler)
-
+	mux.HandleFunc("POST /api/polka/webhooks", apiCfg.UpgradeHandler)
 	corsMux := middlewareCors(mux)
 	srv := &http.Server{
 		Handler: corsMux,
@@ -76,6 +76,7 @@ type User struct {
 	Password     string `json:"password"`
 	Token        string `json:"token"`
 	RefreshToken string `json:"refresh_token"`
+	IsChirpyRed  bool   `json:"is_chirpy_red"`
 }
 
 type RefreshToken struct {
@@ -271,6 +272,11 @@ func (apiCfg *apiConfig) PostUsersHandler(w http.ResponseWriter, r *http.Request
 		Password string `json:"password"`
 		Email    string `json:"email"`
 	}
+	type response struct {
+		Email       string `json:"email"`
+		ID          int    `json:"id"`
+		IsChirpyRed bool   `json:"is_chirpy_red"`
+	}
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
 	err := decoder.Decode(&params)
@@ -284,9 +290,10 @@ func (apiCfg *apiConfig) PostUsersHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	respondWithJSON(w, http.StatusCreated, UserDisplay{
-		Email: user.Email,
-		ID:    user.ID,
+	respondWithJSON(w, http.StatusCreated, response{
+		Email:       user.Email,
+		ID:          user.ID,
+		IsChirpyRed: user.IsChirpyRed,
 	})
 }
 
@@ -294,6 +301,11 @@ func (apiCfg *apiConfig) PutUsersHandler(w http.ResponseWriter, r *http.Request)
 	type parameters struct {
 		Password string `json:"password"`
 		Email    string `json:"email"`
+	}
+	type response struct {
+		Email       string `json:"email"`
+		ID          int    `json:"id"`
+		IsChirpyRed bool   `json:"is_chirpy_red"`
 	}
 	tokenString, found := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	log.Printf("Token:%s", tokenString)
@@ -342,10 +354,44 @@ func (apiCfg *apiConfig) PutUsersHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	respondWithJSON(w, http.StatusOK, UserDisplay{
-		Email: user.Email,
-		ID:    user.ID,
+	respondWithJSON(w, http.StatusOK, response{
+		Email:       user.Email,
+		ID:          user.ID,
+		IsChirpyRed: user.IsChirpyRed,
 	})
+}
+
+func (apiCfg *apiConfig) UpgradeHandler(w http.ResponseWriter, r *http.Request) {
+
+	type parameters struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserID int `json:"user_id"`
+		} `json:"data"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't decode parameters")
+		return
+	}
+	log.Println("Decoding successfull")
+	if params.Event != "user.upgraded" {
+		log.Print(params.Event)
+		respondWithJSON(w, http.StatusOK, "no valid event")
+		return
+	}
+	log.Println("passed event")
+	userid := params.Data.UserID
+	log.Printf("%d", userid)
+	status, err := apiCfg.DB.UpgradeUser(userid)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't find user")
+		return
+	}
+	w.WriteHeader(status)
+
 }
 
 func (apiCfg *apiConfig) ValidateUsersHandler(w http.ResponseWriter, r *http.Request) {
@@ -355,9 +401,14 @@ func (apiCfg *apiConfig) ValidateUsersHandler(w http.ResponseWriter, r *http.Req
 		//Expires  int    `json:"expires_in_seconds"`
 	}
 	type response struct {
-		Token        string `json:"token"`
-		RefreshToken string `json:"refresh_token"`
+		Email       string `json:"email"`
+		ID          int    `json:"id"`
+		IsChirpyRed bool   `json:"is_chirpy_red"`
 	}
+	// type response struct {
+	// 	Token        string `json:"token"`
+	// 	RefreshToken string `json:"refresh_token"`
+	// }
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
 	err := decoder.Decode(&params)
@@ -417,8 +468,9 @@ func (apiCfg *apiConfig) ValidateUsersHandler(w http.ResponseWriter, r *http.Req
 	}
 
 	respondWithJSON(w, http.StatusOK, response{
-		Token:        signedAccessToken,
-		RefreshToken: signedRefreshToken,
+		Email:       user.Email,
+		ID:          user.ID,
+		IsChirpyRed: user.IsChirpyRed,
 	})
 }
 
