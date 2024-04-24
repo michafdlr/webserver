@@ -27,11 +27,13 @@ func main() {
 		log.Fatalf("Error creating database: %v", err)
 	}
 	jwtSecret := os.Getenv("JWT_SECRET")
+	apikey := os.Getenv("API_KEY")
 
 	apiCfg := apiConfig{
 		fileserverHits: 0,
 		DB:             db,
 		JwtSecret:      jwtSecret,
+		ApiKey:         apikey,
 	}
 
 	mux := http.NewServeMux()
@@ -62,6 +64,7 @@ type apiConfig struct {
 	fileserverHits int
 	DB             *database.DB
 	JwtSecret      string
+	ApiKey         string
 }
 
 type Chirp struct {
@@ -385,9 +388,9 @@ func (apiCfg *apiConfig) UpgradeHandler(w http.ResponseWriter, r *http.Request) 
 	log.Println("passed event")
 	userid := params.Data.UserID
 	log.Printf("%d", userid)
-	status, err := apiCfg.DB.UpgradeUser(userid)
+	status, err := apiCfg.DB.UpgradeUser(userid, apiCfg.ApiKey, r.Header)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Couldn't find user")
+		respondWithError(w, http.StatusUnauthorized, "Couldn't find user")
 		return
 	}
 	w.WriteHeader(status)

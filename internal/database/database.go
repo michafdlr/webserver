@@ -255,10 +255,17 @@ func (db *DB) CreateUser(email, pw string) (User, error) {
 	return user, nil
 }
 
-func (db *DB) UpgradeUser(id int) (int, error) {
+func (db *DB) UpgradeUser(id int, apikey string, header http.Header) (int, error) {
 	dbStructure, err := db.loadDB()
 	if err != nil {
 		return http.StatusInternalServerError, err
+	}
+	apiString, found := strings.CutPrefix(header.Get("Authorization"), "ApiKey ")
+	if !found {
+		return http.StatusUnauthorized, errors.New("authorization token missing")
+	}
+	if apiString != apikey {
+		return http.StatusUnauthorized, errors.New("wrong apikey")
 	}
 	if id < 0 || id > len(dbStructure.Users) {
 		return http.StatusNotFound, errors.New("couldn't find user")
