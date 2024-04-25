@@ -220,19 +220,46 @@ func (apiCfg *apiConfig) GetChirpHandler(w http.ResponseWriter, r *http.Request)
 		respondWithError(w, http.StatusInternalServerError, "Couldn't retrieve chirps")
 		return
 	}
-
-	chirps := []Chirp{}
-	for _, dbChirp := range dbChirps {
-		chirps = append(chirps, Chirp{
-			ID:       dbChirp.ID,
-			Body:     dbChirp.Body,
-			AuthorID: dbChirp.AuthorID,
-		})
+	authorId := r.URL.Query().Get("author_id")
+	sorting := r.URL.Query().Get("sort")
+	if sorting == "" {
+		sorting = "asc"
 	}
 
-	sort.Slice(chirps, func(i, j int) bool {
-		return chirps[i].ID < chirps[j].ID
-	})
+	chirps := []Chirp{}
+	if authorId == "" {
+		for _, dbChirp := range dbChirps {
+			chirps = append(chirps, Chirp{
+				ID:       dbChirp.ID,
+				Body:     dbChirp.Body,
+				AuthorID: dbChirp.AuthorID,
+			})
+		}
+	} else {
+		authorIdInt, err := strconv.Atoi(authorId)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "couldn't convert userid")
+			return
+		}
+		for _, dbChirp := range dbChirps {
+			if dbChirp.AuthorID == authorIdInt {
+				chirps = append(chirps, Chirp{
+					ID:       dbChirp.ID,
+					Body:     dbChirp.Body,
+					AuthorID: dbChirp.AuthorID,
+				})
+			}
+		}
+	}
+	if sorting == "asc" {
+		sort.Slice(chirps, func(i, j int) bool {
+			return chirps[i].ID < chirps[j].ID
+		})
+	} else {
+		sort.Slice(chirps, func(i, j int) bool {
+			return chirps[i].ID > chirps[j].ID
+		})
+	}
 
 	respondWithJSON(w, http.StatusOK, chirps)
 }
@@ -407,9 +434,10 @@ func (apiCfg *apiConfig) ValidateUsersHandler(w http.ResponseWriter, r *http.Req
 		Email       string `json:"email"`
 		ID          int    `json:"id"`
 		IsChirpyRed bool   `json:"is_chirpy_red"`
+		Token       string `json:"token"`
 	}
-	// type response struct {
-	// 	Token        string `json:"token"`
+	// type responseToken struct {
+	// 	Token string `json:"token"`
 	// 	RefreshToken string `json:"refresh_token"`
 	// }
 	decoder := json.NewDecoder(r.Body)
@@ -460,7 +488,7 @@ func (apiCfg *apiConfig) ValidateUsersHandler(w http.ResponseWriter, r *http.Req
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't update access token")
 	}
-	err = apiCfg.DB.UpdateUserToken(userID, signedAccessToken, "refresh")
+	err = apiCfg.DB.UpdateUserToken(userID, signedRefreshToken, "refresh")
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't update refresh token")
 	}
@@ -474,6 +502,7 @@ func (apiCfg *apiConfig) ValidateUsersHandler(w http.ResponseWriter, r *http.Req
 		Email:       user.Email,
 		ID:          user.ID,
 		IsChirpyRed: user.IsChirpyRed,
+		Token:       signedAccessToken,
 	})
 }
 
@@ -579,22 +608,6 @@ func (apiCfg *apiConfig) RevokeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// userID, err := token.Claims.GetSubject()
-	// if err != nil {
-	// 	respondWithError(w, http.StatusInternalServerError, "Couldn't get user ID")
-	// 	return
-	// }
-	// userIDInt, err := strconv.Atoi(userID)
-	// if err != nil {
-	// 	respondWithError(w, http.StatusInternalServerError, "Couldn't transform userid to int")
-	// 	return
-	// }
-	// user, err := apiCfg.DB.GetUserByID(userIDInt)
-	// if err != nil {
-	// 	respondWithError(w, http.StatusInternalServerError, "Couldn't retrieve user")
-	// 	return
-	// }
-
 	err = apiCfg.DB.RevokeToken(tokenString)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't revoke Token")
@@ -602,22 +615,6 @@ func (apiCfg *apiConfig) RevokeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-
-	// userID, err := token.Claims.GetSubject()
-	// if err != nil {
-	// 	respondWithError(w, http.StatusInternalServerError, "Couldn't get user ID")
-	// 	return
-	// }
-	// userIDInt, err := strconv.Atoi(userID)
-	// if err != nil {
-	// 	respondWithError(w, http.StatusInternalServerError, "Couldn't transform userid to int")
-	// 	return
-	// }
-	// user, err := apiCfg.DB.GetUserByID(userIDInt)
-	// if err != nil {
-	// 	respondWithError(w, http.StatusInternalServerError, "Couldn't retrieve user")
-	// }
-	// user.RefreshToken
 }
 
 func middlewareCors(next http.Handler) http.Handler {
